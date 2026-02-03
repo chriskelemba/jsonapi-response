@@ -45,53 +45,94 @@ class JsonApi
             return Response::noContent();
         }
 
+        if (is_object($payload) && $status === 201 && ! array_key_exists('Location', $headers)) {
+            $headers['Location'] = self::resourceSelfLink($payload, $type, null);
+        }
+
+        $document = self::document($payload, $type, $request);
+
+        return Response::jsonApi($document, $status, $headers);
+    }
+
+    public static function document(mixed $payload, ?string $type = null, ?Request $request = null): array
+    {
         if ($payload instanceof LengthAwarePaginator || $payload instanceof Paginator) {
-            $resources = self::collection($payload->getCollection(), $type);
+            $collection = $payload->getCollection();
+            self::eagerLoadIncludes($collection, $request);
+            $resources = $collection->map(function ($item) use ($type, $request) {
+                if (is_object($item)) {
+                    $relationships = self::relationshipsFromModel($item, $type, $request);
+                    return self::fromModel($item, $type, null, $relationships);
+                }
+
+                return $item;
+            })->values()->all();
 
             $document = self::data($resources)
                 ->withPagination($payload)
                 ->withLinks(['self' => self::requestUrl($request)])
                 ->toArray();
 
-            return Response::jsonApi($document, $status, $headers);
+            $included = self::includedFromCollection($collection, $request);
+            if ($included !== []) {
+                $document['included'] = $included;
+            }
+
+            return $document;
         }
 
         if (is_iterable($payload) && ! is_array($payload)) {
-            $resources = self::collection($payload, $type);
+            $collection = collect($payload);
+            self::eagerLoadIncludes($collection, $request);
+            $resources = $collection->map(function ($item) use ($type, $request) {
+                if (is_object($item)) {
+                    $relationships = self::relationshipsFromModel($item, $type, $request);
+                    return self::fromModel($item, $type, null, $relationships);
+                }
+
+                return $item;
+            })->values()->all();
 
             $document = self::data($resources)
                 ->withLinks(['self' => self::requestUrl($request)])
                 ->toArray();
 
-            return Response::jsonApi($document, $status, $headers);
+            $included = self::includedFromCollection($collection, $request);
+            if ($included !== []) {
+                $document['included'] = $included;
+            }
+
+            return $document;
         }
 
         if (is_object($payload)) {
-            $resource = self::fromModel($payload, $type);
-            if ($status === 201 && ! array_key_exists('Location', $headers)) {
-                $headers['Location'] = self::resourceSelfLink($payload, $type, null);
-            }
+            self::eagerLoadIncludes($payload, $request);
+            $relationships = self::relationshipsFromModel($payload, $type, $request);
+            $resource = self::fromModel($payload, $type, null, $relationships);
 
             $document = self::data($resource)
                 ->withLinks(['self' => self::resourceSelfLink($payload, $type, $request)])
                 ->toArray();
 
-            return Response::jsonApi($document, $status, $headers);
+            $included = self::includedFromModel($payload, $request);
+            if ($included !== []) {
+                $document['included'] = $included;
+            }
+
+            return $document;
         }
 
         if (is_array($payload) && self::looksLikeDocument($payload)) {
-            return Response::jsonApi($payload, $status, $headers);
+            return $payload;
         }
 
         if (is_array($payload)) {
-            $document = self::data($payload)
+            return self::data($payload)
                 ->withLinks(['self' => self::requestUrl($request)])
                 ->toArray();
-
-            return Response::jsonApi($document, $status, $headers);
         }
 
-        return Response::jsonApi(['data' => $payload], $status, $headers);
+        return ['data' => $payload];
     }
 
     public static function responseErrors(array $errors, int $status = 400, array $headers = []): JsonResponse
@@ -135,6 +176,17 @@ class JsonApi
             $attributes = $model->getAttributes();
         }
 
+        if (is_array($attributes)) {
+            $keyName = method_exists($model, 'getKeyName') ? $model->getKeyName() : 'id';
+            unset($attributes[$keyName], $attributes['id']);
+
+            foreach (['created_at', 'updated_at'] as $timestampKey) {
+                if (array_key_exists($timestampKey, $attributes)) {
+                    $attributes[$timestampKey] = self::formatDate($attributes[$timestampKey]);
+                }
+            }
+        }
+
         return self::resource($type, $id, $attributes ?? [], $relationships, $links);
     }
 
@@ -171,12 +223,13 @@ class JsonApi
     ): array {
         $resource = [
             'type' => $type,
-            'attributes' => $attributes,
         ];
 
         if ($id !== null) {
             $resource['id'] = (string) $id;
         }
+
+        $resource['attributes'] = $attributes;
 
         $resourceLinks = $links;
         if (config('jsonapi.resource_links', true) === true && $id !== null) {
@@ -214,8 +267,12 @@ class JsonApi
             return $value->format('c');
         }
 
-        if (is_string($value)) {
-            return $value;
+        if (is_string($value) && $value !== '') {
+            try {
+                return (new \DateTimeImmutable($value))->format('c');
+            } catch (\Exception $e) {
+                return $value;
+            }
         }
 
         return null;
@@ -366,5 +423,202 @@ class JsonApi
             || array_key_exists('meta', $payload)
             || array_key_exists('links', $payload)
             || array_key_exists('jsonapi', $payload);
+    }
+
+    protected static function relationshipsFromModel(object $model, ?string $type, ?Request $request): array
+    {
+        if (! method_exists($model, 'getRelations')) {
+            return [];
+        }
+
+        $relations = $model->getRelations();
+        if ($relations === []) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($relations as $name => $related) {
+            $data = self::relationshipData($related);
+            $relation = ['data' => $data];
+
+            if (config('jsonapi.relationship_links', true) === true) {
+                $relation['links'] = self::relationshipLinks(
+                    $type ?? self::inferType($model),
+                    method_exists($model, 'getKey') ? $model->getKey() : null,
+                    (string) $name
+                );
+            }
+
+            $result[$name] = $relation;
+        }
+
+        return $result;
+    }
+
+    protected static function relationshipData(mixed $related): mixed
+    {
+        if ($related instanceof \Illuminate\Support\Collection) {
+            return $related->map(function ($item) {
+                return self::resourceIdentifier($item);
+            })->values()->all();
+        }
+
+        if (is_iterable($related)) {
+            return collect($related)->map(function ($item) {
+                return self::resourceIdentifier($item);
+            })->values()->all();
+        }
+
+        if (is_object($related)) {
+            return self::resourceIdentifier($related);
+        }
+
+        return null;
+    }
+
+    protected static function resourceIdentifier(object $model): array
+    {
+        $type = self::inferType($model);
+        $id = method_exists($model, 'getKey') ? $model->getKey() : null;
+
+        return [
+            'type' => $type,
+            'id' => $id === null ? null : (string) $id,
+        ];
+    }
+
+    protected static function parseIncludes(?Request $request): array
+    {
+        if (! $request) {
+            return [];
+        }
+
+        $raw = (string) $request->query('include', '');
+        if ($raw === '') {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('trim', explode(',', $raw))));
+    }
+
+    protected static function eagerLoadIncludes(mixed $target, ?Request $request): void
+    {
+        $includes = self::parseIncludes($request);
+        if ($includes === []) {
+            return;
+        }
+
+        if (is_object($target) && method_exists($target, 'loadMissing')) {
+            $target->loadMissing($includes);
+            return;
+        }
+
+        if (is_object($target) && method_exists($target, 'load')) {
+            $target->load($includes);
+            return;
+        }
+
+        if (is_iterable($target)) {
+            $collection = collect($target);
+            if (method_exists($collection, 'load')) {
+                $collection->load($includes);
+            } else {
+                $collection->each(function ($model) use ($includes) {
+                    if (is_object($model) && method_exists($model, 'loadMissing')) {
+                        $model->loadMissing($includes);
+                    }
+                });
+            }
+        }
+    }
+
+    protected static function includedFromModel(object $model, ?Request $request): array
+    {
+        $includes = self::parseIncludes($request);
+        if ($includes === []) {
+            return [];
+        }
+
+        if (! method_exists($model, 'getRelations')) {
+            return [];
+        }
+
+        $relations = $model->getRelations();
+        $included = [];
+
+        foreach ($includes as $name) {
+            if (! array_key_exists($name, $relations)) {
+                continue;
+            }
+
+            $related = $relations[$name];
+            $included = array_merge($included, self::includedFromRelated($related));
+        }
+
+        return self::uniqueIncluded($included);
+    }
+
+    protected static function includedFromCollection($collection, ?Request $request): array
+    {
+        $includes = self::parseIncludes($request);
+        if ($includes === []) {
+            return [];
+        }
+
+        $included = [];
+        foreach ($collection as $model) {
+            if (! is_object($model) || ! method_exists($model, 'getRelations')) {
+                continue;
+            }
+
+            foreach ($includes as $name) {
+                $relations = $model->getRelations();
+                if (! array_key_exists($name, $relations)) {
+                    continue;
+                }
+
+                $included = array_merge($included, self::includedFromRelated($relations[$name]));
+            }
+        }
+
+        return self::uniqueIncluded($included);
+    }
+
+    protected static function includedFromRelated(mixed $related): array
+    {
+        if ($related instanceof \Illuminate\Support\Collection) {
+            return $related->map(fn ($item) => self::fromModel($item))->values()->all();
+        }
+
+        if (is_iterable($related)) {
+            return collect($related)->map(fn ($item) => self::fromModel($item))->values()->all();
+        }
+
+        if (is_object($related)) {
+            return [self::fromModel($related)];
+        }
+
+        return [];
+    }
+
+    protected static function uniqueIncluded(array $included): array
+    {
+        $map = [];
+
+        foreach ($included as $resource) {
+            if (! is_array($resource)) {
+                continue;
+            }
+
+            $type = $resource['type'] ?? null;
+            $id = $resource['id'] ?? null;
+            if ($type === null || $id === null) {
+                continue;
+            }
+
+            $map[$type . ':' . $id] = $resource;
+        }
+
+        return array_values($map);
     }
 }

@@ -71,6 +71,32 @@ Supported query params:
 - `?include=author,comments`
 - `?fields[books]=title,author`
 
+## Relationships + Included
+
+If a relationship is **loaded**, the package will add a JSON:API `relationships` object automatically.
+
+To load and include related resources without controller code, use `?include=`:
+
+```
+GET /api/book-authors?include=books
+```
+
+This will:
+- Load `books` automatically.
+- Add `relationships.books` to each author.
+- Add `included` resources for the related books.
+
+Example (controller stays simple):
+
+```php
+public function index(Request $request)
+{
+    $authors = BookAuthor::query()->paginate(15);
+
+    return JsonApi::response($authors, 'book-authors', $request);
+}
+```
+
 ## Error Responses
 
 ```php

@@ -1,5 +1,6 @@
 {
     "name": "chriskelemba/jsonapi-response",
+    "version": "0.1.0",
     "type": "library",
     "description": "JSON:API response builder for Laravel",
     "license": "MIT",
