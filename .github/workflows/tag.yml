@@ -1,0 +1,51 @@
+name: Auto Tag
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+jobs:
+  tag:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout merged code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Calculate new tag
+        id: bump_tag
+        run: |
+          latest_tag="${{ steps.get_tag.outputs.latest_tag }}"
+          echo "Current latest tag: $latest_tag"
+
+          # Remove 'v' prefix
+          version=${latest_tag#v}
+
+          IFS='.' read -r major minor patch <<< "$version"
+
+          # Increment patch version
+          patch=$((patch + 1))
+          new_tag="v${major}.${minor}.${patch}"
+
+          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
+          echo "Bumping version to $new_tag"
+
+      - name: Create and push tag
+        run: |
+          new_tag=${{ steps.bump_tag.outputs.new_tag }}
+          git tag "$new_tag"
+          git push origin "$new_tag"
