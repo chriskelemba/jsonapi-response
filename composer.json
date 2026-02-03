@@ -1,0 +1,24 @@
+{
+    "name": "chriskelemba/jsonapi-response",
+    "type": "library",
+    "description": "JSON:API response builder for Laravel",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^12.0",
+        "illuminate/http": "^12.0",
+        "illuminate/pagination": "^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ChrisKelemba\\ResponseApi\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "ChrisKelemba\\ResponseApi\\JsonApiServiceProvider"
+            ]
+        }
+    }
+}
