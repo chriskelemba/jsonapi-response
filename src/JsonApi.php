@@ -68,14 +68,20 @@ class JsonApi
                 return $item;
             })->values()->all();
 
+            if ($request) {
+                $payload->appends($request->query());
+            }
+
             $document = self::data($resources)
                 ->withPagination($payload)
                 ->withLinks(['self' => self::requestUrl($request)])
                 ->toArray();
 
-            $included = self::includedFromCollection($collection, $request);
-            if ($included !== []) {
-                $document['included'] = $included;
+            if (config('jsonapi.include_compound_documents', true) === true) {
+                $included = self::includedFromCollection($collection, $request);
+                if ($included !== []) {
+                    $document['included'] = $included;
+                }
             }
 
             return $document;
@@ -97,9 +103,11 @@ class JsonApi
                 ->withLinks(['self' => self::requestUrl($request)])
                 ->toArray();
 
-            $included = self::includedFromCollection($collection, $request);
-            if ($included !== []) {
-                $document['included'] = $included;
+            if (config('jsonapi.include_compound_documents', true) === true) {
+                $included = self::includedFromCollection($collection, $request);
+                if ($included !== []) {
+                    $document['included'] = $included;
+                }
             }
 
             return $document;
@@ -114,9 +122,11 @@ class JsonApi
                 ->withLinks(['self' => self::resourceSelfLink($payload, $type, $request)])
                 ->toArray();
 
-            $included = self::includedFromModel($payload, $request);
-            if ($included !== []) {
-                $document['included'] = $included;
+            if (config('jsonapi.include_compound_documents', true) === true) {
+                $included = self::includedFromModel($payload, $request);
+                if ($included !== []) {
+                    $document['included'] = $included;
+                }
             }
 
             return $document;
@@ -137,7 +147,7 @@ class JsonApi
 
     public static function responseErrors(array $errors, int $status = 400, array $headers = []): JsonResponse
     {
-        $document = self::errors($errors)->toArray();
+        $document = self::errors(self::normalizeErrors($errors))->toArray();
 
         return Response::jsonApi($document, $status, $headers);
     }
@@ -148,9 +158,11 @@ class JsonApi
         ?string $detail = null,
         ?string $code = null,
         ?array $source = null,
-        array $meta = []
+        array $meta = [],
+        ?string $id = null,
+        ?array $links = null
     ): array {
-        return ErrorBuilder::make($status, $title, $detail, $code, $source, $meta);
+        return ErrorBuilder::make($status, $title, $detail, $code, $source, $meta, $id, $links);
     }
 
     public static function applyQuery(
@@ -334,8 +346,12 @@ class JsonApi
 
     public function toArray(): array
     {
-        if (! array_key_exists('jsonapi', $this->document)) {
+        if (! array_key_exists('jsonapi', $this->document) && config('jsonapi.include_jsonapi', true) === true) {
             $this->withJsonApi();
+        }
+
+        if (config('jsonapi.include_jsonapi', true) !== true) {
+            unset($this->document['jsonapi']);
         }
 
         return self::transformKeysIfNeeded($this->document);
@@ -425,6 +441,100 @@ class JsonApi
             || array_key_exists('jsonapi', $payload);
     }
 
+    protected static function normalizeErrors(array $errors): array
+    {
+        $includeAll = (bool) config('jsonapi.errors.include_all_members', false);
+        if (! $includeAll) {
+            return $errors;
+        }
+
+        return array_map(function ($error) {
+            if (! is_array($error)) {
+                return $error;
+            }
+
+            $defaults = config('jsonapi.errors', []);
+
+            $normalized = $error;
+
+            if (! array_key_exists('id', $normalized) || $normalized['id'] === null || $normalized['id'] === '') {
+                $normalized['id'] = (string) Str::uuid();
+            }
+
+            if (! array_key_exists('status', $normalized) || $normalized['status'] === null || $normalized['status'] === '') {
+                $normalized['status'] = (string) ($defaults['default_status'] ?? '500');
+            } else {
+                $normalized['status'] = (string) $normalized['status'];
+            }
+
+            if (! array_key_exists('title', $normalized) || $normalized['title'] === null || $normalized['title'] === '') {
+                $normalized['title'] = (string) ($defaults['default_title'] ?? 'Error');
+            }
+
+            if (! array_key_exists('code', $normalized)) {
+                $normalized['code'] = $defaults['default_code'] ?? null;
+            }
+
+            if (! array_key_exists('detail', $normalized)) {
+                $normalized['detail'] = $defaults['default_detail'] ?? null;
+            }
+
+            if (! array_key_exists('links', $normalized)) {
+                $normalized['links'] = $defaults['default_links'] ?? null;
+            }
+
+            if (! array_key_exists('source', $normalized)) {
+                $normalized['source'] = $defaults['default_source'] ?? null;
+            }
+
+            if (! array_key_exists('meta', $normalized)) {
+                $normalized['meta'] = $defaults['default_meta'] ?? null;
+            }
+
+            return $normalized;
+        }, $errors);
+    }
+
+    public static function validationErrors(
+        array|\Illuminate\Support\MessageBag $errors,
+        string $title = 'Validation Error',
+        string $code = 'VALIDATION_ERROR',
+        int $status = 422
+    ): array {
+        if ($errors instanceof \Illuminate\Support\MessageBag) {
+            $errors = $errors->toArray();
+        }
+
+        $result = [];
+        foreach ($errors as $field => $messages) {
+            $messages = is_array($messages) ? $messages : [$messages];
+            foreach ($messages as $message) {
+                $result[] = self::error(
+                    $status,
+                    $title,
+                    is_string($message) ? $message : null,
+                    $code,
+                    ['pointer' => '/data/attributes/' . $field],
+                    ['field' => $field]
+                );
+            }
+        }
+
+        return $result;
+    }
+
+    public static function responseValidationErrors(
+        array|\Illuminate\Support\MessageBag $errors,
+        int $status = 422,
+        string $title = 'Validation Error',
+        string $code = 'VALIDATION_ERROR',
+        array $headers = []
+    ): JsonResponse {
+        $payload = self::validationErrors($errors, $title, $code, $status);
+
+        return self::responseErrors($payload, $status, $headers);
+    }
+
     protected static function relationshipsFromModel(object $model, ?string $type, ?Request $request): array
     {
         if (! method_exists($model, 'getRelations')) {
@@ -432,13 +542,19 @@ class JsonApi
         }
 
         $relations = $model->getRelations();
-        if ($relations === []) {
+        $includes = self::parseIncludes($request);
+        if ($relations === [] && $includes === []) {
             return [];
         }
 
         $result = [];
         foreach ($relations as $name => $related) {
-            $data = self::relationshipData($related);
+            $limit = null;
+            if ($includes !== [] && in_array($name, $includes, true)) {
+                $limit = self::includeLimit($request, $name);
+            }
+
+            $data = self::relationshipData($related, $limit);
             $relation = ['data' => $data];
 
             if (config('jsonapi.relationship_links', true) === true) {
@@ -452,19 +568,47 @@ class JsonApi
             $result[$name] = $relation;
         }
 
+        if (
+            $includes !== []
+            && config('jsonapi.relationships.links_for_includes', true) === true
+            && config('jsonapi.relationship_links', true) === true
+        ) {
+            foreach ($includes as $name) {
+                if (array_key_exists($name, $result)) {
+                    continue;
+                }
+                if (! method_exists($model, $name)) {
+                    continue;
+                }
+
+                $result[$name] = [
+                    'links' => self::relationshipLinks(
+                        $type ?? self::inferType($model),
+                        method_exists($model, 'getKey') ? $model->getKey() : null,
+                        (string) $name
+                    ),
+                ];
+            }
+        }
+
         return $result;
     }
 
-    protected static function relationshipData(mixed $related): mixed
+    protected static function relationshipData(mixed $related, ?int $limit = null): mixed
     {
         if ($related instanceof \Illuminate\Support\Collection) {
-            return $related->map(function ($item) {
+            $items = $limit !== null ? $related->take($limit) : $related;
+            return $items->map(function ($item) {
                 return self::resourceIdentifier($item);
             })->values()->all();
         }
 
         if (is_iterable($related)) {
-            return collect($related)->map(function ($item) {
+            $items = collect($related);
+            if ($limit !== null) {
+                $items = $items->take($limit);
+            }
+            return $items->map(function ($item) {
                 return self::resourceIdentifier($item);
             })->values()->all();
         }
@@ -501,8 +645,55 @@ class JsonApi
         return array_values(array_filter(array_map('trim', explode(',', $raw))));
     }
 
+    protected static function includeLimit(?Request $request, ?string $relation = null): ?int
+    {
+        $default = config('jsonapi.query.max_include', null);
+        if (! $request) {
+            return self::normalizeIncludeLimit($default);
+        }
+
+        $param = config('jsonapi.query.max_include_param', 'max_include');
+        $raw = $request->query($param, null);
+
+        if (is_array($raw)) {
+            if ($relation !== null && array_key_exists($relation, $raw)) {
+                $raw = $raw[$relation];
+            } else {
+                return self::normalizeIncludeLimit($default);
+            }
+        }
+
+        if ($raw === null) {
+            return self::normalizeIncludeLimit($default);
+        }
+
+        return self::normalizeIncludeLimit($raw);
+    }
+
+    protected static function normalizeIncludeLimit(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_string($value) && $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            $limit = (int) $value;
+            return $limit > 0 ? $limit : null;
+        }
+
+        return null;
+    }
+
     protected static function eagerLoadIncludes(mixed $target, ?Request $request): void
     {
+        if (config('jsonapi.eager_load_includes', true) !== true) {
+            return;
+        }
+
         $includes = self::parseIncludes($request);
         if ($includes === []) {
             return;
@@ -552,7 +743,8 @@ class JsonApi
             }
 
             $related = $relations[$name];
-            $included = array_merge($included, self::includedFromRelated($related));
+            $limit = self::includeLimit($request, $name);
+            $included = array_merge($included, self::includedFromRelated($related, $limit));
         }
 
         return self::uniqueIncluded($included);
@@ -577,21 +769,27 @@ class JsonApi
                     continue;
                 }
 
-                $included = array_merge($included, self::includedFromRelated($relations[$name]));
+                $limit = self::includeLimit($request, $name);
+                $included = array_merge($included, self::includedFromRelated($relations[$name], $limit));
             }
         }
 
         return self::uniqueIncluded($included);
     }
 
-    protected static function includedFromRelated(mixed $related): array
+    protected static function includedFromRelated(mixed $related, ?int $limit = null): array
     {
         if ($related instanceof \Illuminate\Support\Collection) {
-            return $related->map(fn ($item) => self::fromModel($item))->values()->all();
+            $items = $limit !== null ? $related->take($limit) : $related;
+            return $items->map(fn ($item) => self::fromModel($item))->values()->all();
         }
 
         if (is_iterable($related)) {
-            return collect($related)->map(fn ($item) => self::fromModel($item))->values()->all();
+            $items = collect($related);
+            if ($limit !== null) {
+                $items = $items->take($limit);
+            }
+            return $items->map(fn ($item) => self::fromModel($item))->values()->all();
         }
 
         if (is_object($related)) {
