@@ -41,7 +41,7 @@ class JsonApiPaginator
         }
 
         return [
-            'links' => array_filter($links),
+            'links' => $links,
             'meta' => $meta,
         ];
     }

@@ -10,12 +10,18 @@ class ErrorBuilder
         ?string $detail = null,
         ?string $code = null,
         ?array $source = null,
-        array $meta = []
+        array $meta = [],
+        ?string $id = null,
+        ?array $links = null
     ): array {
         $error = [
             'status' => (string) $status,
             'title' => $title,
         ];
+
+        if ($id !== null) {
+            $error['id'] = $id;
+        }
 
         if ($detail !== null) {
             $error['detail'] = $detail;
@@ -23,6 +29,10 @@ class ErrorBuilder
 
         if ($code !== null) {
             $error['code'] = $code;
+        }
+
+        if ($links !== null) {
+            $error['links'] = $links;
         }
 
         if ($source !== null) {

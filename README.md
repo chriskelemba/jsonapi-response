@@ -69,7 +69,10 @@ Supported query params:
 - `?sort=created_at` or `?sort=-created_at`
 - `?filter[author]=Jane`
 - `?include=author,comments`
+- `?max_include=100`
+- `?max_include[comments]=50`
 - `?fields[books]=title,author`
+- `?page[number]=2&page[size]=25`
 
 ## Relationships + Included
 
@@ -84,7 +87,24 @@ GET /api/book-authors?include=books
 This will:
 - Load `books` automatically.
 - Add `relationships.books` to each author.
-- Add `included` resources for the related books.
+- Add `included` resources for the related books (unless `include_compound_documents` is disabled).
+- If `relationships.links_for_includes` is enabled, relationship links are emitted even when the relation isn't loaded.
+
+### Limit Included Size
+
+If a relationship is large, you can cap how many related resources are serialized in `relationships` and `included`:
+
+```
+GET /api/book-authors/51?include=books&max_include=100
+```
+
+Notes:
+- This limits the **response size** only. It does not change how many related rows are loaded from the database.
+- For large related sets, prefer paging the related collection via a filtered endpoint.
+
+### Pagination Links Preserve Query
+
+Pagination links (`first`, `next`, `last`) keep your current query parameters (e.g. `filter`, `include`, `fields`).
 
 Example (controller stays simple):
 
@@ -103,12 +123,29 @@ public function index(Request $request)
 use ChrisKelemba\ResponseApi\JsonApi;
 
 $errors = [
-    JsonApi::error(422, 'Validation Error', 'The title field is required.', 'VALIDATION_ERROR', [
-        'pointer' => '/data/attributes/title',
-    ]),
+    JsonApi::error(
+        422,
+        'Validation Error',
+        'The title field is required.',
+        'VALIDATION_ERROR',
+        ['pointer' => '/data/attributes/title'],
+        ['field' => 'title'],
+        'err_123',
+        ['about' => 'https://api.example.com/errors/err_123']
+    ),
 ];
 
 return JsonApi::responseErrors($errors, 422);
+```
+
+Supported error members include `id`, `links`, `status`, `code`, `title`, `detail`, `source`, and `meta`.
+
+### Validation Errors
+
+```php
+use ChrisKelemba\ResponseApi\JsonApi;
+
+return JsonApi::responseValidationErrors($validator->errors());
 ```
 
 ## Configuration
@@ -119,7 +156,16 @@ Key options:
 - `transform_keys`: Enforce JSON:API member naming recommendations (camelCase + ASCII)
 - `resource_links` / `relationship_links`: Include resource/relationship links
 - `method_override`: Enable `X-HTTP-Method-Override: PATCH`
+- `include_jsonapi`: Include or suppress the top-level `jsonapi` object
+- `include_compound_documents`: Include or suppress top-level `included`
+- `eager_load_includes`: Toggle eager loading for `?include=`
+- `relationships.links_for_includes`: Emit relationship links for `?include=` even if not loaded
 - `query.*`: Allow‑lists for sort/filter/include/fields
+- `query.allow_all_filters`: Allow any `filter[...]` key without an allow‑list (useful for dynamic APIs)
+- `query.allow_all_sorts`: Allow any `sort` field without an allow‑list
+- `query.allow_all_includes`: Allow any `include` without an allow‑list
+- `query.allow_all_fields`: Allow any `fields[...]` without an allow‑list
+- `errors.include_all_members`: Force error objects to include all standard members
 
 ## Notes
 
