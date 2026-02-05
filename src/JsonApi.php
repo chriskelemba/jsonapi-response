@@ -359,14 +359,18 @@ class JsonApi
 
     protected function defaultJsonApiObject(): array
     {
-        $jsonapi = config('jsonapi.jsonapi', ['version' => '1.1', 'meta' => []]);
-        $default = ['version' => '1.1'];
+        $jsonapi = config('jsonapi.jsonapi', []);
+        $default = [];
+
+        if (array_key_exists('version', $jsonapi) && $jsonapi['version'] !== null && $jsonapi['version'] !== '') {
+            $default['version'] = $jsonapi['version'];
+        }
 
         if (! empty($jsonapi['meta'])) {
             $default['meta'] = $jsonapi['meta'];
         }
 
-        return array_merge($default, array_filter($jsonapi, fn ($value) => $value !== []));
+        return $default;
     }
 
     protected static function relationshipsObject(
