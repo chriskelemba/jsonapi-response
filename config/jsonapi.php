@@ -6,7 +6,7 @@ return [
     'include_jsonapi' => false,
     'include_compound_documents' => false,
     'jsonapi' => [
-        'version' => null,
+        'version' => '1.1',
         'meta' => [],
     ],
 
