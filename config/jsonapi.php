@@ -15,6 +15,10 @@ return [
 
     'resource_links' => true,
     'relationship_links' => true,
+    'links' => [
+        // Prefix resource/relationship URLs (e.g. "api" => /api/users/1).
+        'resource_base_path' => 'api',
+    ],
 
     'method_override' => [
         'enabled' => true,

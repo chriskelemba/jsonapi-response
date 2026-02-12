@@ -1,0 +1,40 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#111C2E"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#37B6FF"/>
+      <stop offset="1" stop-color="#56E39F"/>
+    </linearGradient>
+    <filter id="glow" x="290" y="95" width="620" height="620" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="30" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.25 0"/>
+    </filter>
+    <style>
+      .title { font: 700 64px 'Segoe UI', Helvetica, Arial, sans-serif; fill: #EAF2FF; letter-spacing: 0.3px; }
+      .subtitle { font: 500 24px 'Segoe UI', Helvetica, Arial, sans-serif; fill: #AFC3E8; }
+      .badge { font: 700 22px Consolas, 'Liberation Mono', Menlo, monospace; fill: #DFF5FF; }
+      .small { font: 500 20px 'Segoe UI', Helvetica, Arial, sans-serif; fill: #8FA6CE; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1080" cy="110" r="180" fill="#1A2A47" opacity="0.42"/>
+  <circle cx="120" cy="550" r="170" fill="#18345A" opacity="0.34"/>
+
+  <g filter="url(#glow)">
+    <circle cx="600" cy="325" r="160" fill="url(#orb)"/>
+  </g>
+
+  <circle cx="600" cy="325" r="142" fill="#112037" stroke="#2F4C77" stroke-width="2"/>
+  <circle cx="600" cy="325" r="108" fill="#0F1828" stroke="#2A3E63"/>
+
+  <rect x="552" y="278" width="96" height="94" rx="14" fill="#172A45" stroke="#3A5E8F"/>
+  <text x="565" y="336" class="badge">{ }</text>
+
+  <text x="600" y="118" text-anchor="middle" class="title">JSON:API Response</text>
+  <text x="600" y="156" text-anchor="middle" class="subtitle">Laravel package</text>
+  <text x="600" y="532" text-anchor="middle" class="small">chriskelemba/jsonapi-response</text>
+</svg>
