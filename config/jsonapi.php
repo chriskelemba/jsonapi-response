@@ -4,7 +4,7 @@ return [
     'content_type' => 'application/vnd.api+json',
 
     'include_jsonapi' => false,
-    'include_compound_documents' => false,
+    'include_compound_documents' => true,
     'jsonapi' => [
         'version' => '1.1',
         'meta' => [],
