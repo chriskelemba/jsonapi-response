@@ -439,8 +439,10 @@ class JsonApi
     protected static function resourceUrl(string $type, string|int $id): string
     {
         $type = Str::kebab($type);
+        $basePath = trim((string) config('jsonapi.links.resource_base_path', ''), '/');
+        $path = $basePath === '' ? $type . '/' . $id : $basePath . '/' . $type . '/' . $id;
 
-        return URL::to($type . '/' . $id);
+        return URL::to($path);
     }
 
     protected static function transformKeysIfNeeded(array $payload): array
@@ -661,7 +663,12 @@ class JsonApi
         return self::responseErrors($payload, $status, $headers);
     }
 
-    protected static function relationshipsFromModel(object $model, ?string $type, ?Request $request): array
+    protected static function relationshipsFromModel(
+        object $model,
+        ?string $type,
+        ?Request $request,
+        string $contextPath = ''
+    ): array
     {
         if (! method_exists($model, 'getRelations')) {
             return [];
@@ -669,6 +676,7 @@ class JsonApi
 
         $relations = $model->getRelations();
         $includes = self::parseIncludes($request);
+        $includeRoots = self::includeRootsForContext($includes, $contextPath);
         if ($relations === [] && $includes === []) {
             return [];
         }
@@ -676,8 +684,9 @@ class JsonApi
         $result = [];
         foreach ($relations as $name => $related) {
             $limit = null;
-            if ($includes !== [] && in_array($name, $includes, true)) {
-                $limit = self::includeLimit($request, $name);
+            if ($includeRoots !== [] && in_array($name, $includeRoots, true)) {
+                $path = $contextPath === '' ? (string) $name : $contextPath . '.' . $name;
+                $limit = self::includeLimit($request, $path);
             }
 
             $data = self::relationshipData($related, $limit);
@@ -699,7 +708,7 @@ class JsonApi
             && config('jsonapi.relationships.links_for_includes', true) === true
             && config('jsonapi.relationship_links', true) === true
         ) {
-            foreach ($includes as $name) {
+            foreach ($includeRoots as $name) {
                 if (array_key_exists($name, $result)) {
                     continue;
                 }
@@ -771,7 +780,72 @@ class JsonApi
         return array_values(array_filter(array_map('trim', explode(',', $raw))));
     }
 
-    protected static function includeLimit(?Request $request, ?string $relation = null): ?int
+    protected static function includeRoots(array $includes): array
+    {
+        return self::includeRootsForContext($includes);
+    }
+
+    protected static function includeRootsForContext(array $includes, string $contextPath = ''): array
+    {
+        $roots = [];
+        $contextPath = trim($contextPath, '.');
+
+        foreach ($includes as $include) {
+            $include = trim((string) $include, '.');
+            if ($include === '') {
+                continue;
+            }
+
+            if ($contextPath === '') {
+                $root = trim(explode('.', $include)[0] ?? '');
+                if ($root !== '') {
+                    $roots[] = $root;
+                }
+                continue;
+            }
+
+            $prefix = $contextPath . '.';
+            if (! str_starts_with($include, $prefix)) {
+                continue;
+            }
+
+            $remaining = substr($include, strlen($prefix));
+            $root = trim(explode('.', $remaining)[0] ?? '');
+            if ($root !== '') {
+                $roots[] = $root;
+            }
+        }
+
+        return array_values(array_unique($roots));
+    }
+
+    /**
+     * @return array<string, array>
+     */
+    protected static function includeTree(array $includes): array
+    {
+        $tree = [];
+
+        foreach ($includes as $path) {
+            $parts = array_values(array_filter(array_map('trim', explode('.', $path))));
+            if ($parts === []) {
+                continue;
+            }
+
+            $node = &$tree;
+            foreach ($parts as $part) {
+                if (! array_key_exists($part, $node)) {
+                    $node[$part] = [];
+                }
+                $node = &$node[$part];
+            }
+            unset($node);
+        }
+
+        return $tree;
+    }
+
+    protected static function includeLimit(?Request $request, ?string $includePath = null): ?int
     {
         $default = config('jsonapi.query.max_include', null);
         if (! $request) {
@@ -782,11 +856,16 @@ class JsonApi
         $raw = $request->query($param, null);
 
         if (is_array($raw)) {
-            if ($relation !== null && array_key_exists($relation, $raw)) {
-                $raw = $raw[$relation];
-            } else {
+            if ($includePath === null || $includePath === '') {
                 return self::normalizeIncludeLimit($default);
             }
+
+            $resolved = self::resolveIncludeLimitFromArray($raw, $includePath);
+            if ($resolved === null) {
+                return self::normalizeIncludeLimit($default);
+            }
+
+            $raw = $resolved;
         }
 
         if ($raw === null) {
@@ -809,6 +888,38 @@ class JsonApi
         if (is_numeric($value)) {
             $limit = (int) $value;
             return $limit > 0 ? $limit : null;
+        }
+
+        return null;
+    }
+
+    protected static function resolveIncludeLimitFromArray(array $raw, string $includePath): mixed
+    {
+        if (array_key_exists($includePath, $raw)) {
+            return $raw[$includePath];
+        }
+
+        $segments = array_values(array_filter(explode('.', $includePath)));
+        if ($segments === []) {
+            return null;
+        }
+
+        $node = $raw;
+        foreach ($segments as $segment) {
+            if (! is_array($node) || ! array_key_exists($segment, $node)) {
+                $node = null;
+                break;
+            }
+            $node = $node[$segment];
+        }
+
+        if ($node !== null) {
+            return $node;
+        }
+
+        $leaf = (string) end($segments);
+        if ($leaf !== '' && array_key_exists($leaf, $raw)) {
+            return $raw[$leaf];
         }
 
         return null;
@@ -861,16 +972,18 @@ class JsonApi
         }
 
         $relations = $model->getRelations();
+        $includeTree = self::includeTree($includes);
         $included = [];
 
-        foreach ($includes as $name) {
+        foreach ($includeTree as $name => $children) {
             if (! array_key_exists($name, $relations)) {
                 continue;
             }
 
             $related = $relations[$name];
-            $limit = self::includeLimit($request, $name);
-            $included = array_merge($included, self::includedFromRelated($related, $limit));
+            $path = (string) $name;
+            $limit = self::includeLimit($request, $path);
+            $included = array_merge($included, self::includedFromRelated($related, $limit, $children, $request, $path));
         }
 
         return self::uniqueIncluded($included);
@@ -883,31 +996,42 @@ class JsonApi
             return [];
         }
 
+        $includeTree = self::includeTree($includes);
         $included = [];
         foreach ($collection as $model) {
             if (! is_object($model) || ! method_exists($model, 'getRelations')) {
                 continue;
             }
 
-            foreach ($includes as $name) {
+            foreach ($includeTree as $name => $children) {
                 $relations = $model->getRelations();
                 if (! array_key_exists($name, $relations)) {
                     continue;
                 }
 
-                $limit = self::includeLimit($request, $name);
-                $included = array_merge($included, self::includedFromRelated($relations[$name], $limit));
+                $path = (string) $name;
+                $limit = self::includeLimit($request, $path);
+                $included = array_merge(
+                    $included,
+                    self::includedFromRelated($relations[$name], $limit, $children, $request, $path)
+                );
             }
         }
 
         return self::uniqueIncluded($included);
     }
 
-    protected static function includedFromRelated(mixed $related, ?int $limit = null): array
+    protected static function includedFromRelated(
+        mixed $related,
+        ?int $limit = null,
+        array $children = [],
+        ?Request $request = null,
+        string $contextPath = ''
+    ): array
     {
         if ($related instanceof \Illuminate\Support\Collection) {
             $items = $limit !== null ? $related->take($limit) : $related;
-            return $items->map(fn ($item) => self::fromModel($item))->values()->all();
+            return self::includedFromModels($items->values()->all(), $children, $request, $contextPath);
         }
 
         if (is_iterable($related)) {
@@ -915,14 +1039,57 @@ class JsonApi
             if ($limit !== null) {
                 $items = $items->take($limit);
             }
-            return $items->map(fn ($item) => self::fromModel($item))->values()->all();
+            return self::includedFromModels($items->values()->all(), $children, $request, $contextPath);
         }
 
         if (is_object($related)) {
-            return [self::fromModel($related)];
+            return self::includedFromModels([$related], $children, $request, $contextPath);
         }
 
         return [];
+    }
+
+    protected static function includedFromModels(
+        array $models,
+        array $children = [],
+        ?Request $request = null,
+        string $contextPath = ''
+    ): array
+    {
+        $included = [];
+
+        foreach ($models as $model) {
+            if (! is_object($model)) {
+                continue;
+            }
+
+            $included[] = self::fromModel(
+                $model,
+                null,
+                null,
+                self::relationshipsFromModel($model, null, $request, $contextPath)
+            );
+
+            if ($children === [] || ! method_exists($model, 'getRelations')) {
+                continue;
+            }
+
+            $relations = $model->getRelations();
+            foreach ($children as $childName => $grandChildren) {
+                if (! array_key_exists($childName, $relations)) {
+                    continue;
+                }
+
+                $childPath = $contextPath === '' ? (string) $childName : $contextPath . '.' . $childName;
+                $childLimit = self::includeLimit($request, $childPath);
+                $included = array_merge(
+                    $included,
+                    self::includedFromRelated($relations[$childName], $childLimit, $grandChildren, $request, $childPath)
+                );
+            }
+        }
+
+        return $included;
     }
 
     protected static function uniqueIncluded(array $included): array

@@ -1,5 +1,7 @@
 # JSON:API Response for Laravel
 
+![JSON:API Response banner](assets/jsonapi-response-hero.svg)
+
 A lightweight JSON:API response helper for Laravel with pagination, links, query helpers (sort/filter/include/fields), and consistent response formatting.
 
 ## Install
@@ -106,6 +108,7 @@ Supported query params:
 - `?include=author,comments`
 - `?max_include=100`
 - `?max_include[comments]=50`
+- `?max_include[tasks.subTasks]=5`
 - `?fields[books]=title,author`
 - `?page[number]=2&page[size]=25`
 
@@ -117,6 +120,12 @@ To load and include related resources without controller code, use `?include=`:
 
 ```
 GET /api/book-authors?include=books
+```
+
+Nested includes are supported via dot notation:
+
+```
+GET /api/users/1?include=tasks.subTasks
 ```
 
 This will:
@@ -131,6 +140,12 @@ If a relationship is large, you can cap how many related resources are serialize
 
 ```
 GET /api/book-authors/51?include=books&max_include=100
+```
+
+Nested per-path include limits are supported:
+
+```
+GET /api/users/1?include=tasks.subTasks&max_include[tasks]=10&max_include[tasks.subTasks]=3
 ```
 
 Notes:
@@ -201,6 +216,7 @@ All defaults are in `config/jsonapi.php`.
 Key options:
 - `transform_keys`: Enforce JSON:API member naming recommendations (camelCase + ASCII)
 - `resource_links` / `relationship_links`: Include resource/relationship links
+- `links.resource_base_path`: Prefix generated resource/relationship links (default: `api`)
 - `method_override`: Enable `X-HTTP-Method-Override: PATCH`
 - `include_jsonapi`: Include or suppress the top-level `jsonapi` object
 - `include_compound_documents`: Include or suppress top-level `included`
