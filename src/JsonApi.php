@@ -8,10 +8,12 @@ use ChrisKelemba\ResponseApi\Support\KeyTransform;
 use ChrisKelemba\ResponseApi\Support\QueryApplier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Response;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
@@ -174,6 +176,44 @@ class JsonApi
         return QueryApplier::apply($query, $request, $type, $options);
     }
 
+    public static function applyModelQuery(
+        Builder $query,
+        Request $request,
+        ?string $type = null,
+        array $options = []
+    ): Builder {
+        $defaults = self::modelQueryOptions($query);
+        $resolved = array_replace($defaults, $options);
+
+        return self::applyQuery($query, $request, $type, $resolved);
+    }
+
+    public static function paginateQuery(
+        Builder $query,
+        Request $request,
+        int $defaultPerPage = 15,
+        int $maxPerPage = 100
+    ): LengthAwarePaginator {
+        $perPage = (int) $request->input('page.size', $defaultPerPage);
+        $perPage = max(1, min($perPage, $maxPerPage));
+
+        return $query->paginate($perPage);
+    }
+
+    public static function modelQueryOptions(Builder $query): array
+    {
+        $model = $query->getModel();
+        $columns = self::modelColumns($model);
+        $relations = self::modelRelations($model);
+
+        return [
+            'allowed_sorts' => $columns,
+            'allowed_filters' => $columns,
+            'allowed_fields' => $columns,
+            'allowed_includes' => $relations,
+        ];
+    }
+
     public static function fromModel(
         object $model,
         ?string $type = null,
@@ -184,8 +224,12 @@ class JsonApi
         $type ??= self::inferType($model);
         $id = method_exists($model, 'getKey') ? $model->getKey() : null;
 
-        if ($attributes === null && method_exists($model, 'getAttributes')) {
-            $attributes = $model->getAttributes();
+        if ($attributes === null) {
+            if (method_exists($model, 'attributesToArray')) {
+                $attributes = $model->attributesToArray();
+            } elseif (method_exists($model, 'getAttributes')) {
+                $attributes = $model->getAttributes();
+            }
         }
 
         if (is_array($attributes)) {
@@ -413,6 +457,88 @@ class JsonApi
         $class = class_basename($model);
 
         return Str::plural(Str::kebab($class));
+    }
+
+    protected static function modelColumns(Model $model): array
+    {
+        $columns = [];
+
+        try {
+            $columns = Schema::connection($model->getConnectionName())
+                ->getColumnListing($model->getTable());
+        } catch (\Throwable $e) {
+            $columns = [];
+        }
+
+        if ($columns === []) {
+            $columns = $model->getFillable();
+        }
+
+        $keyName = $model->getKeyName();
+        if (! in_array($keyName, $columns, true)) {
+            $columns[] = $keyName;
+        }
+
+        if (method_exists($model, 'usesTimestamps') && $model->usesTimestamps()) {
+            $createdAt = $model->getCreatedAtColumn();
+            $updatedAt = $model->getUpdatedAtColumn();
+
+            if ($createdAt && ! in_array($createdAt, $columns, true)) {
+                $columns[] = $createdAt;
+            }
+
+            if ($updatedAt && ! in_array($updatedAt, $columns, true)) {
+                $columns[] = $updatedAt;
+            }
+        }
+
+        $hidden = $model->getHidden();
+        if ($hidden !== []) {
+            $columns = array_values(array_filter($columns, fn ($column) => ! in_array($column, $hidden, true)));
+        }
+
+        return array_values(array_unique(array_filter($columns, fn ($column) => is_string($column) && $column !== '')));
+    }
+
+    protected static function modelRelations(Model $model): array
+    {
+        $relations = [];
+        $reflection = new \ReflectionClass($model);
+
+        foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            if ($method->isStatic()) {
+                continue;
+            }
+
+            if ($method->class !== $reflection->getName()) {
+                continue;
+            }
+
+            if ($method->getNumberOfRequiredParameters() > 0) {
+                continue;
+            }
+
+            $name = $method->getName();
+            if (in_array($name, ['boot', 'booted', 'initializeTraits'], true)) {
+                continue;
+            }
+
+            if (str_starts_with($name, '__')) {
+                continue;
+            }
+
+            try {
+                $result = $model->{$name}();
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            if ($result instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
+                $relations[] = $name;
+            }
+        }
+
+        return array_values(array_unique($relations));
     }
 
     protected static function requestUrl(?Request $request): string

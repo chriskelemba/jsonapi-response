@@ -16,6 +16,8 @@ Laravel package auto-discovery will register the service provider automatically.
 php artisan vendor:publish --tag=jsonapi-config
 ```
 
+You do not need to publish config to use the package.
+
 ## Quick Start
 
 ### Collection + Pagination
@@ -24,6 +26,16 @@ php artisan vendor:publish --tag=jsonapi-config
 use ChrisKelemba\ResponseApi\JsonApi;
 
 $books = Book::query()->paginate(15);
+
+return JsonApi::response($books, 'books', request());
+```
+
+### Drop-in Response Replacement
+
+Keep your existing controller logic and only replace the return line:
+
+```php
+$books = Book::all();
 
 return JsonApi::response($books, 'books', request());
 ```
@@ -65,6 +77,29 @@ $books = $query->paginate(15);
 return JsonApi::response($books, 'books', request());
 ```
 
+### Minimal Controller Setup
+
+For low-boilerplate controllers, use model-aware helpers:
+
+```php
+use App\Models\User;
+use ChrisKelemba\ResponseApi\JsonApi;
+use Illuminate\Http\Request;
+
+public function index(Request $request)
+{
+    $query = JsonApi::applyModelQuery(User::query(), $request, 'users', [
+        'allowed_includes' => ['tasks', 'roles', 'permissions'],
+    ]);
+
+    $users = JsonApi::paginateQuery($query, $request);
+
+    return JsonApi::response($users, 'users', $request);
+}
+```
+
+`applyModelQuery()` auto-derives allow-lists from the model and excludes hidden attributes.
+
 Supported query params:
 - `?sort=created_at` or `?sort=-created_at`
 - `?filter[author]=Jane`
@@ -101,6 +136,17 @@ GET /api/book-authors/51?include=books&max_include=100
 Notes:
 - This limits the **response size** only. It does not change how many related rows are loaded from the database.
 - For large related sets, prefer paging the related collection via a filtered endpoint.
+- There is no default include cap unless you set `query.max_include` or pass `max_include` in the request.
+
+### Relationship Pagination (JSON:API standard)
+
+`include` is for sideloading, not true paging of related collections.
+
+Use the related endpoint for paging:
+
+```
+GET /api/book-authors/51/books?page[number]=1&page[size]=10
+```
 
 ### Pagination Links Preserve Query
 
@@ -171,6 +217,7 @@ Key options:
 
 - Content-Type is set to `application/vnd.api+json`.
 - ISO‑8601 timestamps are recommended.
+- Eloquent hidden attributes are respected in serialized `attributes` (e.g. `password`, `remember_token`).
 
 ## License
 
