@@ -12,6 +12,11 @@ return [
 
     'transform_keys' => true,
     'transform_recursive' => true,
+    'transform_attributes' => false,
+    'attributes' => [
+        // Keep non-standard model primary keys (e.g. ctg_id) inside resource attributes.
+        'include_custom_primary_key' => true,
+    ],
 
     'resource_links' => true,
     'relationship_links' => true,
@@ -45,6 +50,16 @@ return [
     ],
 
     'pagination' => [
+        // Auto-paginate Builder/Relation payloads passed to JsonApi::response().
+        'enabled' => true,
+        // Allow request-level opt-out using page.disable=true or page.size=0.
+        'allow_disable' => true,
+        'disable_param' => 'page.disable',
+        // Request key names use Request::input dot notation by default.
+        'number_param' => 'page.number',
+        'size_param' => 'page.size',
+        'default_size' => 15,
+        'max_size' => 100,
         'meta_key' => 'page',
         'include_total' => true,
         'include_last_page' => true,
