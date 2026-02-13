@@ -27,10 +27,19 @@ You do not need to publish config to use the package.
 ```php
 use ChrisKelemba\ResponseApi\JsonApi;
 
-$books = Book::query()->paginate(15);
-
-return JsonApi::response($books, 'books', request());
+return JsonApi::response(Book::query(), 'books', request());
 ```
+
+Passing a `Builder` or `Relation` now auto-paginates by default using `?page[number]` and `?page[size]`.
+
+To override page size:
+- Per request: `?page[size]=25`
+- Default for all requests: set `pagination.default_size` in `config/jsonapi.php`
+
+To omit pagination for a query response:
+- Per request: `?page[disable]=true` (or `?page[size]=0`)
+- Globally: set `pagination.enabled` to `false`
+- Per endpoint: call `->get()` and pass the collection to `JsonApi::response()`
 
 ### Drop-in Response Replacement
 
@@ -111,6 +120,14 @@ Supported query params:
 - `?max_include[tasks.subTasks]=5`
 - `?fields[books]=title,author`
 - `?page[number]=2&page[size]=25`
+
+You can also pass the query directly to `response()` and let the package paginate automatically:
+
+```php
+$query = JsonApi::applyModelQuery(User::query(), $request, 'users');
+
+return JsonApi::response($query, 'users', $request);
+```
 
 ## Relationships + Included
 
@@ -215,6 +232,9 @@ All defaults are in `config/jsonapi.php`.
 
 Key options:
 - `transform_keys`: Enforce JSON:API member naming recommendations (camelCase + ASCII)
+- `transform_recursive`: Apply key transform to nested payload structures
+- `transform_attributes`: Transform keys inside resource `attributes` (set `false` to keep snake_case like `parent_id`)
+- `attributes.include_custom_primary_key`: Keep custom primary key columns in `attributes` (e.g. `ctg_id`) while still sending resource `id`
 - `resource_links` / `relationship_links`: Include resource/relationship links
 - `links.resource_base_path`: Prefix generated resource/relationship links (default: `api`)
 - `method_override`: Enable `X-HTTP-Method-Override: PATCH`
@@ -228,6 +248,10 @@ Key options:
 - `query.allow_all_includes`: Allow any `include` without an allow‑list
 - `query.allow_all_fields`: Allow any `fields[...]` without an allow‑list
 - `errors.include_all_members`: Force error objects to include all standard members
+- `pagination.enabled`: Auto-paginate `Builder`/`Relation` payloads in `JsonApi::response()`
+- `pagination.allow_disable` / `pagination.disable_param`: Allow request-level opt-out (e.g. `page[disable]=true`)
+- `pagination.number_param` / `pagination.size_param`: Page parameter names (`page.number` / `page.size` by default)
+- `pagination.default_size` / `pagination.max_size`: Default and max page size limits
 
 ## Notes
 

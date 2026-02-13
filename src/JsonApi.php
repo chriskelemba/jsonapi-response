@@ -9,6 +9,7 @@ use ChrisKelemba\ResponseApi\Support\QueryApplier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -58,6 +59,16 @@ class JsonApi
 
     public static function document(mixed $payload, ?string $type = null, ?Request $request = null): array
     {
+        if ($payload instanceof Builder || $payload instanceof Relation) {
+            $request ??= request();
+
+            if (self::shouldPaginateQueryPayload($request)) {
+                $payload = self::paginateQuery($payload, $request);
+            } else {
+                $payload = $payload->get();
+            }
+        }
+
         if ($payload instanceof LengthAwarePaginator || $payload instanceof Paginator) {
             $collection = $payload->getCollection();
             self::eagerLoadIncludes($collection, $request);
@@ -189,15 +200,22 @@ class JsonApi
     }
 
     public static function paginateQuery(
-        Builder $query,
+        Builder|Relation $query,
         Request $request,
-        int $defaultPerPage = 15,
-        int $maxPerPage = 100
+        ?int $defaultPerPage = null,
+        ?int $maxPerPage = null
     ): LengthAwarePaginator {
-        $perPage = (int) $request->input('page.size', $defaultPerPage);
-        $perPage = max(1, min($perPage, $maxPerPage));
+        $defaultPerPage ??= (int) config('jsonapi.pagination.default_size', 15);
+        $maxPerPage ??= (int) config('jsonapi.pagination.max_size', 100);
 
-        return $query->paginate($perPage);
+        $sizeParam = (string) config('jsonapi.pagination.size_param', 'page.size');
+        $numberParam = (string) config('jsonapi.pagination.number_param', 'page.number');
+
+        $perPage = (int) $request->input($sizeParam, $defaultPerPage);
+        $perPage = max(1, min($perPage, $maxPerPage));
+        $page = max(1, (int) $request->input($numberParam, 1));
+
+        return $query->paginate($perPage, ['*'], 'page', $page);
     }
 
     public static function modelQueryOptions(Builder $query): array
@@ -234,7 +252,12 @@ class JsonApi
 
         if (is_array($attributes)) {
             $keyName = method_exists($model, 'getKeyName') ? $model->getKeyName() : 'id';
-            unset($attributes[$keyName], $attributes['id']);
+            $includeCustomPrimaryKey = (bool) config('jsonapi.attributes.include_custom_primary_key', true);
+
+            unset($attributes['id']);
+            if ($keyName === 'id' || ! $includeCustomPrimaryKey) {
+                unset($attributes[$keyName]);
+            }
 
             foreach (['created_at', 'updated_at'] as $timestampKey) {
                 if (array_key_exists($timestampKey, $attributes)) {
@@ -451,7 +474,35 @@ class JsonApi
             return $payload;
         }
 
-        return KeyTransform::transform($payload, (bool) config('jsonapi.transform_recursive', true));
+        return self::transformPayloadKeys(
+            $payload,
+            (bool) config('jsonapi.transform_recursive', true),
+            (bool) config('jsonapi.transform_attributes', true)
+        );
+    }
+
+    protected static function transformPayloadKeys(
+        array $payload,
+        bool $recursive,
+        bool $transformAttributes
+    ): array {
+        $result = [];
+
+        foreach ($payload as $key => $value) {
+            $outKey = is_string($key) ? KeyTransform::camelize($key) : $key;
+
+            if ($recursive && is_array($value)) {
+                $isAttributesObject = is_string($key) && $key === 'attributes';
+
+                if (! ($isAttributesObject && ! $transformAttributes)) {
+                    $value = self::transformPayloadKeys($value, true, $transformAttributes);
+                }
+            }
+
+            $result[$outKey] = $value;
+        }
+
+        return $result;
     }
 
     protected static function inferType(object $model): string
@@ -546,6 +597,58 @@ class JsonApi
     protected static function requestUrl(?Request $request): string
     {
         return $request ? $request->fullUrl() : URL::current();
+    }
+
+    protected static function shouldPaginateQueryPayload(Request $request): bool
+    {
+        if (config('jsonapi.pagination.enabled', true) !== true) {
+            return false;
+        }
+
+        $allowDisable = (bool) config('jsonapi.pagination.allow_disable', true);
+        if (! $allowDisable) {
+            return true;
+        }
+
+        $disableParam = (string) config('jsonapi.pagination.disable_param', 'page.disable');
+        $disable = self::toBoolOrNull($request->input($disableParam));
+        if ($disable === true) {
+            return false;
+        }
+
+        $sizeParam = (string) config('jsonapi.pagination.size_param', 'page.size');
+        $rawSize = $request->input($sizeParam);
+        if ($rawSize !== null && is_numeric($rawSize) && (int) $rawSize <= 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    protected static function toBoolOrNull(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (int) $value !== 0;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($normalized, ['0', 'false', 'no', 'off', ''], true)) {
+            return false;
+        }
+
+        return null;
     }
 
     protected static function resourceSelfLink(object $model, ?string $type, ?Request $request): string
